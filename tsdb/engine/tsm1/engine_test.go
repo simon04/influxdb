@@ -1080,6 +1080,29 @@ func TestEngine_DeleteSeriesRange(t *testing.T) {
 				t.Fatalf("series mismatch: got %s, exp %s", got, exp)
 			}
 
+			iter.Close()
+
+			// Deleting remaining series should remove them from the series.
+			itr = &seriesIterator{keys: [][]byte{[]byte("cpu,host=0"), []byte("cpu,host=B")}}
+			if err := e.DeleteSeriesRange(itr, 0, 9000000000); err != nil {
+				t.Fatalf("failed to delete series: %v", err)
+			}
+
+			indexSet = tsdb.IndexSet{Indexes: []tsdb.Index{e.index}, SeriesFile: e.sfile}
+			if iter, err = indexSet.MeasurementSeriesIDIterator([]byte("cpu")); err != nil {
+				t.Fatalf("iterator error: %v", err)
+			}
+			if iter == nil {
+				return
+			}
+
+			defer iter.Close()
+			if elem, err = iter.Next(); err != nil {
+				t.Fatal(err)
+			}
+			if elem.SeriesID != 0 {
+				t.Fatalf("got an undeleted series id, but series should be dropped from index")
+			}
 		})
 	}
 }

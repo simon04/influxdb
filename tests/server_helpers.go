@@ -530,7 +530,7 @@ func NewConfig() *Config {
 }
 
 func newRetentionPolicySpec(name string, rf int, duration time.Duration) *meta.RetentionPolicySpec {
-	return &meta.RetentionPolicySpec{Name: name, ReplicaN: &rf, Duration: &duration}
+	return &meta.RetentionPolicySpec{Name: name, ReplicaN: &rf, Duration: &duration, ShardGroupDuration: time.Hour}
 }
 
 func maxInt64() string {
