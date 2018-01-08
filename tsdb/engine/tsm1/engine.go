@@ -122,7 +122,8 @@ const (
 
 // Engine represents a storage engine with compressed blocks.
 type Engine struct {
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	seriesIDs *tsdb.SeriesIDSet
 
 	index tsdb.Index
 
@@ -201,6 +202,7 @@ func NewEngine(id uint64, idx tsdb.Index, database, path string, walPath string,
 		path:         path,
 		index:        idx,
 		sfile:        sfile,
+		seriesIDs:    tsdb.NewSeriesIDSet(),
 		logger:       logger,
 		traceLogger:  logger,
 		traceLogging: opt.Config.TraceLoggingEnabled,
@@ -226,6 +228,12 @@ func NewEngine(id uint64, idx tsdb.Index, database, path string, walPath string,
 	}
 
 	return e
+}
+
+// SetSeriesIDsSet sets the series ID set on the engine. It's only used for
+// testing purposes, and is not part of the tsdb.Engine interface.
+func (e *Engine) SetSeriesIDsSet(s *tsdb.SeriesIDSet) {
+	e.seriesIDs = s
 }
 
 // Digest returns a reader for the shard's digest.
@@ -1398,6 +1406,7 @@ func (e *Engine) deleteSeriesRange(seriesKeys [][]byte, min, max int64) error {
 	// Have we deleted all values for the series? If so, we need to remove
 	// the series from the index.
 	if len(seriesKeys) > 0 {
+		buf := make([]byte, 1024) // For use when accessing series file.
 		for _, k := range seriesKeys {
 			// This key was crossed out earlier, skip it
 			if k == nil {
@@ -1422,6 +1431,16 @@ func (e *Engine) deleteSeriesRange(seriesKeys [][]byte, min, max int64) error {
 			if hasCacheValues {
 				continue
 			}
+
+			// TODO(edd): if a DROP MEASUREMENT, or even a DROP SERIES had been
+			// issued, we could have updated this bitmap much earlier when we had
+			// the series id, which will save the lookup from series key -> series id.
+			name, tags := models.ParseKey(k)
+			sid := e.sfile.SeriesID([]byte(name), tags, buf)
+			if sid == 0 {
+				return fmt.Errorf("unable to find id for series key %s during deletion", k)
+			}
+			e.seriesIDs.Remove(sid)
 
 			// Remove the series from the index for this shard
 			if err := e.index.UnassignShard(string(k), e.id, ts); err != nil {

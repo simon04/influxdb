@@ -36,8 +36,8 @@ const IndexName = "inmem"
 func init() {
 	tsdb.NewInmemIndex = func(name string, sfile *tsdb.SeriesFile) (interface{}, error) { return NewIndex(name, sfile), nil }
 
-	tsdb.RegisterIndex(IndexName, func(id uint64, database, path string, sfile *tsdb.SeriesFile, opt tsdb.EngineOptions) tsdb.Index {
-		return NewShardIndex(id, database, path, sfile, opt)
+	tsdb.RegisterIndex(IndexName, func(id uint64, database, path string, seriesIDSet *tsdb.SeriesIDSet, sfile *tsdb.SeriesFile, opt tsdb.EngineOptions) tsdb.Index {
+		return NewShardIndex(id, database, path, seriesIDSet, sfile, opt)
 	})
 }
 
@@ -162,7 +162,7 @@ func (i *Index) MeasurementIterator() (tsdb.MeasurementIterator, error) {
 
 // CreateSeriesIfNotExists adds the series for the given measurement to the
 // index and sets its ID or returns the existing series object
-func (i *Index) CreateSeriesIfNotExists(shardID uint64, key, name []byte, tags models.Tags, opt *tsdb.EngineOptions, ignoreLimits bool) error {
+func (i *Index) CreateSeriesIfNotExists(shardID uint64, seriesSet *tsdb.SeriesIDSet, key, name []byte, tags models.Tags, opt *tsdb.EngineOptions, ignoreLimits bool) error {
 	if _, err := i.sfile.CreateSeriesListIfNotExists([][]byte{name}, []models.Tags{tags}, nil); err != nil {
 		return err
 	}
@@ -209,6 +209,9 @@ func (i *Index) CreateSeriesIfNotExists(shardID uint64, key, name []byte, tags m
 
 	// Add the series to the series sketch.
 	i.seriesSketch.Add(key)
+
+	// This series needs to be added to the bitset tracking undeleted series IDs.
+	seriesSet.Add(seriesID)
 
 	return nil
 }
@@ -1032,9 +1035,13 @@ var _ tsdb.Index = &ShardIndex{}
 // in-memory index. This is required because per-shard in-memory indexes will
 // grow the heap size too large.
 type ShardIndex struct {
-	*Index
+	id uint64 // shard id
 
-	id  uint64 // shard id
+	*Index // Shared reference to global database-wide index.
+
+	// Bitset storing all undeleted series IDs associated with this shard.
+	seriesIDSet *tsdb.SeriesIDSet
+
 	opt tsdb.EngineOptions
 }
 
@@ -1120,11 +1127,11 @@ func (idx *ShardIndex) CreateSeriesListIfNotExists(keys, names [][]byte, tagsSli
 // InitializeSeries is called during start-up.
 // This works the same as CreateSeriesIfNotExists except it ignore limit errors.
 func (i *ShardIndex) InitializeSeries(key, name []byte, tags models.Tags) error {
-	return i.Index.CreateSeriesIfNotExists(i.id, key, name, tags, &i.opt, true)
+	return i.Index.CreateSeriesIfNotExists(i.id, i.seriesIDSet, key, name, tags, &i.opt, true)
 }
 
 func (i *ShardIndex) CreateSeriesIfNotExists(key, name []byte, tags models.Tags) error {
-	return i.Index.CreateSeriesIfNotExists(i.id, key, name, tags, &i.opt, false)
+	return i.Index.CreateSeriesIfNotExists(i.id, i.seriesIDSet, key, name, tags, &i.opt, false)
 }
 
 // TagSets returns a list of tag sets based on series filtering.
@@ -1133,11 +1140,12 @@ func (i *ShardIndex) TagSets(name []byte, opt query.IteratorOptions) ([]*query.T
 }
 
 // NewShardIndex returns a new index for a shard.
-func NewShardIndex(id uint64, database, path string, sfile *tsdb.SeriesFile, opt tsdb.EngineOptions) tsdb.Index {
+func NewShardIndex(id uint64, database, path string, seriesIDSet *tsdb.SeriesIDSet, sfile *tsdb.SeriesFile, opt tsdb.EngineOptions) tsdb.Index {
 	return &ShardIndex{
-		Index: opt.InmemIndex.(*Index),
-		id:    id,
-		opt:   opt,
+		Index:       opt.InmemIndex.(*Index),
+		id:          id,
+		seriesIDSet: seriesIDSet,
+		opt:         opt,
 	}
 }
 
